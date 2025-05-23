@@ -12,7 +12,6 @@ import os
 import boto3
 import sagemaker
 import sagemaker.session
-
 from sagemaker.estimator import Estimator
 from sagemaker.inputs import TrainingInput
 from sagemaker.model_metrics import (
