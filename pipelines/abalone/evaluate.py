@@ -1,96 +1,119 @@
-"""Evaluates the movie recommendation model."""
-import argparse
+#!/usr/bin/env python3
+
 import json
-import logging
 import os
 import pickle
 import pandas as pd
 import numpy as np
+import logging
+from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.feature_extraction.text import CountVectorizer
 
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
-logger.addHandler(logging.StreamHandler())
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-def get_recommendations(movie_name, movie_list, similarity_matrix, top_k=5):
-    """Get movie recommendations."""
-    try:
-        movie_matches = movie_list[movie_list['title'].str.contains(movie_name, case=False, na=False)]
-        if movie_matches.empty:
-            return []
-        
-        index = movie_matches.index[0]
-        distances = list(enumerate(similarity_matrix[index]))
-        distances = sorted(distances, reverse=True, key=lambda x: x[1])[1:top_k+1]
-        
-        return [movie_list.iloc[i[0]].title for i in distances]
-    except:
-        return []
-
-def calculate_diversity(recommendations_list):
-    """Calculate diversity of recommendations."""
-    all_recommendations = [rec for recs in recommendations_list for rec in recs]
-    unique_recommendations = len(set(all_recommendations))
-    total_recommendations = len(all_recommendations)
+def evaluate_recommendations(similarity_matrix, test_df, top_k=5):
+    """
+    Evaluate the recommendation system using various metrics
+    """
+    metrics = {}
     
-    if total_recommendations == 0:
-        return 0.0
+    # Basic statistics
+    metrics['total_movies'] = len(test_df)
+    metrics['similarity_matrix_shape'] = similarity_matrix.shape
+    metrics['average_similarity'] = float(np.mean(similarity_matrix))
+    metrics['similarity_std'] = float(np.std(similarity_matrix))
     
-    return unique_recommendations / total_recommendations
+    # Coverage metrics
+    non_zero_similarities = np.count_nonzero(similarity_matrix)
+    total_possible_pairs = similarity_matrix.shape[0] * similarity_matrix.shape[1]
+    metrics['coverage'] = float(non_zero_similarities / total_possible_pairs)
+    
+    # Diversity metrics (average pairwise distance of top recommendations)
+    diversity_scores = []
+    for i in range(min(100, len(test_df))):  # Sample 100 movies for efficiency
+        # Get top k similar movies
+        similarities = similarity_matrix[i]
+        top_indices = np.argsort(similarities)[-top_k-1:-1]  # Exclude self
+        
+        if len(top_indices) > 1:
+            # Calculate average pairwise distance in top recommendations
+            top_similarities = similarities[top_indices]
+            avg_diversity = 1 - np.mean(top_similarities)
+            diversity_scores.append(avg_diversity)
+    
+    if diversity_scores:
+        metrics['average_diversity'] = float(np.mean(diversity_scores))
+        metrics['diversity_std'] = float(np.std(diversity_scores))
+    else:
+        metrics['average_diversity'] = 0.0
+        metrics['diversity_std'] = 0.0
+    
+    # Recommendation quality score (composite metric)
+    # Higher similarity variance suggests better discrimination
+    similarity_variance = np.var(similarity_matrix, axis=1)
+    metrics['average_discrimination'] = float(np.mean(similarity_variance))
+    
+    # Calculate a composite quality score
+    # Good recommendation system should have:
+    # - High coverage
+    # - Good diversity
+    # - Good discrimination ability
+    quality_score = (
+        metrics['coverage'] * 0.3 + 
+        metrics['average_diversity'] * 0.4 + 
+        metrics['average_discrimination'] * 0.3
+    )
+    metrics['quality_score'] = float(quality_score)
+    
+    return metrics
 
 if __name__ == "__main__":
-    logger.info("Starting model evaluation.")
+    logger.info("Starting model evaluation")
     
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model-dir", type=str, required=True)
-    parser.add_argument("--test-data", type=str, required=True)
-    parser.add_argument("--output-dir", type=str, required=True)
-    args = parser.parse_args()
-    
-    logger.info("Loading model artifacts from %s.", args.model_dir)
     # Load model artifacts
-    with open(os.path.join(args.model_dir, 'movie_list.pkl'), 'rb') as f:
-        movie_list = pickle.load(f)
-    
-    with open(os.path.join(args.model_dir, 'similarity.pkl'), 'rb') as f:
+    model_path = "/opt/ml/processing/model"
+    with open(os.path.join(model_path, "similarity.pkl"), "rb") as f:
         similarity_matrix = pickle.load(f)
     
-    logger.info("Loading test data from %s.", args.test_data)
-    test_df = pd.read_csv(os.path.join(args.test_data, "test.csv"))
+    with open(os.path.join(model_path, "movie_list.pkl"), "rb") as f:
+        movie_list = pickle.load(f)
     
-    logger.info("Running evaluation on %d test samples.", len(test_df))
+    logger.info(f"Loaded similarity matrix of shape: {similarity_matrix.shape}")
+    logger.info(f"Loaded movie list with {len(movie_list)} movies")
     
-    # Sample movies for evaluation
-    sample_movies = test_df['title'].sample(min(50, len(test_df))).tolist()
+    # Load test data
+    test_data_path = "/opt/ml/processing/test/test.csv"
+    test_df = pd.read_csv(test_data_path)
+    logger.info(f"Loaded test data with {len(test_df)} movies")
     
-    # Get recommendations for sample movies
-    all_recommendations = []
-    successful_recommendations = 0
+    # Evaluate the model
+    evaluation_metrics = evaluate_recommendations(similarity_matrix, test_df)
     
-    for movie in sample_movies:
-        recommendations = get_recommendations(movie, movie_list, similarity_matrix)
-        if recommendations:
-            all_recommendations.append(recommendations)
-            successful_recommendations += 1
+    # Log key metrics
+    logger.info("Evaluation Results:")
+    logger.info(f"Quality Score: {evaluation_metrics['quality_score']:.4f}")
+    logger.info(f"Coverage: {evaluation_metrics['coverage']:.4f}")
+    logger.info(f"Average Diversity: {evaluation_metrics['average_diversity']:.4f}")
+    logger.info(f"Average Discrimination: {evaluation_metrics['average_discrimination']:.4f}")
     
-    # Calculate metrics
-    diversity_score = calculate_diversity(all_recommendations)
-    coverage_score = len(movie_list) / len(movie_list)  # 100% coverage for content-based
-    recommendation_success_rate = successful_recommendations / len(sample_movies)
-    
-    evaluation_results = {
-        "diversity_score": diversity_score,
-        "coverage_score": coverage_score,
-        "recommendation_success_rate": recommendation_success_rate,
-        "total_movies_in_catalog": len(movie_list),
-        "test_sample_size": len(sample_movies),
-        "successful_recommendations": successful_recommendations
+    # Prepare evaluation report
+    report_dict = {
+        "recommendation_metrics": evaluation_metrics,
+        "model_quality": {
+            "quality_score": evaluation_metrics['quality_score'],
+            "status": "PASS" if evaluation_metrics['quality_score'] > 0.3 else "FAIL"
+        }
     }
     
-    logger.info("Evaluation Results: %s", evaluation_results)
+    # Save evaluation report
+    output_dir = "/opt/ml/processing/evaluation"
+    os.makedirs(output_dir, exist_ok=True)
     
-    # Save evaluation results
-    os.makedirs(args.output_dir, exist_ok=True)
-    with open(os.path.join(args.output_dir, "evaluation.json"), "w") as f:
-        json.dump(evaluation_results, f, indent=2)
+    evaluation_path = os.path.join(output_dir, "evaluation.json")
+    with open(evaluation_path, "w") as f:
+        json.dump(report_dict, f, indent=2)
     
-    logger.info("Evaluation completed successfully.")
+    logger.info(f"Evaluation report saved to {evaluation_path}")
+    logger.info("Model evaluation completed successfully!")
