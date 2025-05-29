@@ -1,4 +1,16 @@
 #!/usr/bin/env python3
+import subprocess
+import sys
+
+# Install required libraries via pip
+required_packages = ['pandas', 'numpy', 'nltk', 'scikit-learn']
+for package in required_packages:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+
+# Download necessary NLTK data
+import nltk
+nltk.download('punkt')
+
 
 import argparse
 import os
