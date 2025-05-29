@@ -1,120 +1,132 @@
-"""Feature engineers the abalone dataset."""
+"""Feature engineers the movie dataset for recommendation system."""
 import argparse
 import logging
 import os
 import pathlib
-import requests
-import tempfile
-
 import boto3
 import numpy as np
 import pandas as pd
-
-from sklearn.compose import ColumnTransformer
-from sklearn.impute import SimpleImputer
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
+import ast
+import pickle
+from nltk.stem.porter import PorterStemmer
+from sklearn.feature_extraction.text import CountVectorizer
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 logger.addHandler(logging.StreamHandler())
 
+def convert_features(text):
+    """Convert string representation of list to actual list of names."""
+    try:
+        return [i['name'] for i in ast.literal_eval(text)]
+    except:
+        return []
 
-# Since we get a headerless CSV file we specify the column names here.
-feature_columns_names = [
-    "sex",
-    "length",
-    "diameter",
-    "height",
-    "whole_weight",
-    "shucked_weight",
-    "viscera_weight",
-    "shell_weight",
-]
-label_column = "rings"
+def convert_cast(text, limit=3):
+    """Extract top cast members."""
+    try:
+        L = []
+        for i, val in enumerate(ast.literal_eval(text)):
+            if i < limit:
+                L.append(val['name'])
+            else:
+                break
+        return L
+    except:
+        return []
 
-feature_columns_dtype = {
-    "sex": str,
-    "length": np.float64,
-    "diameter": np.float64,
-    "height": np.float64,
-    "whole_weight": np.float64,
-    "shucked_weight": np.float64,
-    "viscera_weight": np.float64,
-    "shell_weight": np.float64,
-}
-label_column_dtype = {"rings": np.float64}
+def fetch_director(text):
+    """Extract director from crew."""
+    try:
+        for i in ast.literal_eval(text):
+            if i['job'] == 'Director':
+                return [i['name']]
+    except:
+        pass
+    return []
 
+def remove_space(L):
+    """Remove spaces from list items."""
+    return [i.replace(" ", "") for i in L]
 
-def merge_two_dicts(x, y):
-    """Merges two dicts, returning a new copy."""
-    z = x.copy()
-    z.update(y)
-    return z
-
+def stem_text(text, stemmer):
+    """Apply Porter stemming to text."""
+    return " ".join([stemmer.stem(i) for i in text.split()])
 
 if __name__ == "__main__":
-    logger.debug("Starting preprocessing.")
+    logger.info("Starting movie data preprocessing.")
+    
     parser = argparse.ArgumentParser()
     parser.add_argument("--input-data", type=str, required=True)
     args = parser.parse_args()
-
+    
     base_dir = "/opt/ml/processing"
     pathlib.Path(f"{base_dir}/data").mkdir(parents=True, exist_ok=True)
+    pathlib.Path(f"{base_dir}/train").mkdir(parents=True, exist_ok=True)
+    pathlib.Path(f"{base_dir}/test").mkdir(parents=True, exist_ok=True)
+    
     input_data = args.input_data
     bucket = input_data.split("/")[2]
-    key = "/".join(input_data.split("/")[3:])
-
-    logger.info("Downloading data from bucket: %s, key: %s", bucket, key)
-    fn = f"{base_dir}/data/abalone-dataset.csv"
+    key_prefix = "/".join(input_data.split("/")[3:])
+    
+    logger.info("Downloading data from bucket: %s, key prefix: %s", bucket, key_prefix)
+    
+    # Download movies and credits data
     s3 = boto3.resource("s3")
-    s3.Bucket(bucket).download_file(key, fn)
-
-    logger.debug("Reading downloaded data.")
-    df = pd.read_csv(
-        fn,
-        header=None,
-        names=feature_columns_names + [label_column],
-        dtype=merge_two_dicts(feature_columns_dtype, label_column_dtype),
-    )
-    os.unlink(fn)
-
-    logger.debug("Defining transformers.")
-    numeric_features = list(feature_columns_names)
-    numeric_features.remove("sex")
-    numeric_transformer = Pipeline(
-        steps=[("imputer", SimpleImputer(strategy="median")), ("scaler", StandardScaler())]
-    )
-
-    categorical_features = ["sex"]
-    categorical_transformer = Pipeline(
-        steps=[
-            ("imputer", SimpleImputer(strategy="constant", fill_value="missing")),
-            ("onehot", OneHotEncoder(handle_unknown="ignore")),
-        ]
-    )
-
-    preprocess = ColumnTransformer(
-        transformers=[
-            ("num", numeric_transformer, numeric_features),
-            ("cat", categorical_transformer, categorical_features),
-        ]
-    )
-
-    logger.info("Applying transforms.")
-    y = df.pop("rings")
-    X_pre = preprocess.fit_transform(df)
-    y_pre = y.to_numpy().reshape(len(y), 1)
-
-    X = np.concatenate((y_pre, X_pre), axis=1)
-
-    logger.info("Splitting %d rows of data into train, validation, test datasets.", len(X))
-    np.random.shuffle(X)
-    train, validation, test = np.split(X, [int(0.7 * len(X)), int(0.85 * len(X))])
-
-    logger.info("Writing out datasets to %s.", base_dir)
-    pd.DataFrame(train).to_csv(f"{base_dir}/train/train.csv", header=False, index=False)
-    pd.DataFrame(validation).to_csv(
-        f"{base_dir}/validation/validation.csv", header=False, index=False
-    )
-    pd.DataFrame(test).to_csv(f"{base_dir}/test/test.csv", header=False, index=False)
+    movies_fn = f"{base_dir}/data/tmdb_5000_movies.csv"
+    credits_fn = f"{base_dir}/data/tmdb_5000_credits.csv"
+    
+    s3.Bucket(bucket).download_file(f"{key_prefix}/tmdb_5000_movies.csv", movies_fn)
+    s3.Bucket(bucket).download_file(f"{key_prefix}/tmdb_5000_credits.csv", credits_fn)
+    
+    logger.info("Reading downloaded data.")
+    movies = pd.read_csv(movies_fn)
+    credits = pd.read_csv(credits_fn)
+    
+    # Clean up downloaded files
+    os.unlink(movies_fn)
+    os.unlink(credits_fn)
+    
+    logger.info("Merging datasets and selecting features.")
+    # Merge datasets
+    movies = movies.merge(credits, on='title')
+    movies = movies[['movie_id', 'title', 'overview', 'genres', 'keywords', 'cast', 'crew']]
+    movies.dropna(inplace=True)
+    
+    logger.info("Applying feature transformations.")
+    # Process features
+    movies['genres'] = movies['genres'].apply(convert_features)
+    movies['keywords'] = movies['keywords'].apply(convert_features)
+    movies['cast'] = movies['cast'].apply(convert_cast)
+    movies['crew'] = movies['crew'].apply(fetch_director)
+    movies['overview'] = movies['overview'].apply(lambda x: x.split())
+    
+    # Remove spaces from categorical features
+    movies['cast'] = movies['cast'].apply(remove_space)
+    movies['crew'] = movies['crew'].apply(remove_space)
+    movies['genres'] = movies['genres'].apply(remove_space)
+    movies['keywords'] = movies['keywords'].apply(remove_space)
+    
+    # Create tags
+    movies['tags'] = movies['overview'] + movies['genres'] + movies['keywords'] + movies['cast'] + movies['crew']
+    
+    # Create final dataset
+    processed_df = movies[['movie_id', 'title', 'tags']].copy()
+    processed_df['tags'] = processed_df['tags'].apply(lambda x: " ".join(x).lower())
+    
+    # Apply stemming
+    logger.info("Applying stemming to text features.")
+    ps = PorterStemmer()
+    processed_df['tags'] = processed_df['tags'].apply(lambda x: stem_text(x, ps))
+    
+    logger.info("Splitting data into train and test sets.")
+    # Split data (80% train, 20% test)
+    train_data = processed_df.sample(frac=0.8, random_state=42)
+    test_data = processed_df.drop(train_data.index)
+    
+    logger.info("Writing processed datasets to %s.", base_dir)
+    # Save processed data
+    train_data.to_csv(f"{base_dir}/train/train.csv", index=False)
+    test_data.to_csv(f"{base_dir}/test/test.csv", index=False)
+    
+    logger.info("Preprocessing completed successfully.")
