@@ -1,132 +1,124 @@
-"""Feature engineers the movie dataset for recommendation system."""
+"""Feature engineering script for movie recommendation preprocessing."""
 import argparse
 import logging
 import os
-import pathlib
-import boto3
-import numpy as np
+import subprocess
+import sys
 import pandas as pd
-import ast
-import pickle
+import numpy as np
+from pathlib import Path
+
+# Install and setup NLTK
+try:
+    import nltk
+except ImportError:
+    print("Installing NLTK...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "nltk"])
+    import nltk
+
+# Download required NLTK data
+try:
+    nltk.data.find('tokenizers/punkt')
+except LookupError:
+    print("Downloading NLTK punkt tokenizer...")
+    nltk.download('punkt', quiet=True)
+
+try:
+    nltk.data.find('corpora/stopwords')  
+except LookupError:
+    print("Downloading NLTK stopwords...")
+    nltk.download('stopwords', quiet=True)
+
 from nltk.stem.porter import PorterStemmer
-from sklearn.feature_extraction.text import CountVectorizer
+from nltk.corpus import stopwords
+import nltk
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 logger.addHandler(logging.StreamHandler())
 
-def convert_features(text):
-    """Convert string representation of list to actual list of names."""
-    try:
-        return [i['name'] for i in ast.literal_eval(text)]
-    except:
-        return []
-
-def convert_cast(text, limit=3):
-    """Extract top cast members."""
-    try:
-        L = []
-        for i, val in enumerate(ast.literal_eval(text)):
-            if i < limit:
-                L.append(val['name'])
-            else:
-                break
-        return L
-    except:
-        return []
-
-def fetch_director(text):
-    """Extract director from crew."""
-    try:
-        for i in ast.literal_eval(text):
-            if i['job'] == 'Director':
-                return [i['name']]
-    except:
-        pass
-    return []
-
-def remove_space(L):
-    """Remove spaces from list items."""
-    return [i.replace(" ", "") for i in L]
-
-def stem_text(text, stemmer):
-    """Apply Porter stemming to text."""
-    return " ".join([stemmer.stem(i) for i in text.split()])
+def preprocess_text(text):
+    """Preprocess text data for movie recommendation."""
+    if pd.isna(text):
+        return ""
+    
+    # Convert to lowercase
+    text = text.lower()
+    
+    # Tokenize
+    tokens = nltk.word_tokenize(text)
+    
+    # Remove stopwords and stem
+    ps = PorterStemmer()
+    stop_words = set(stopwords.words('english'))
+    
+    processed_tokens = []
+    for token in tokens:
+        if token.isalpha() and token not in stop_words:
+            processed_tokens.append(ps.stem(token))
+    
+    return ' '.join(processed_tokens)
 
 if __name__ == "__main__":
-    logger.info("Starting movie data preprocessing.")
+    logger.info("Starting preprocessing.")
     
     parser = argparse.ArgumentParser()
     parser.add_argument("--input-data", type=str, required=True)
     args = parser.parse_args()
     
     base_dir = "/opt/ml/processing"
-    pathlib.Path(f"{base_dir}/data").mkdir(parents=True, exist_ok=True)
-    pathlib.Path(f"{base_dir}/train").mkdir(parents=True, exist_ok=True)
-    pathlib.Path(f"{base_dir}/test").mkdir(parents=True, exist_ok=True)
+    logger.info("Reading input data from %s.", args.input_data)
     
-    input_data = args.input_data
-    bucket = input_data.split("/")[2]
-    key_prefix = "/".join(input_data.split("/")[3:])
+    # Read the input data
+    df = pd.read_csv(args.input_data)
+    logger.info("Input data shape: %s", df.shape)
     
-    logger.info("Downloading data from bucket: %s, key prefix: %s", bucket, key_prefix)
+    # Preprocess the data - adjust column names based on your dataset
+    # Assuming your movie dataset has columns like 'title', 'overview', 'genres', etc.
     
-    # Download movies and credits data
-    s3 = boto3.resource("s3")
-    movies_fn = f"{base_dir}/data/tmdb_5000_movies.csv"
-    credits_fn = f"{base_dir}/data/tmdb_5000_credits.csv"
+    # Example preprocessing for movie recommendation:
+    # Combine relevant text features into 'tags' column
+    if 'overview' in df.columns:
+        df['overview'] = df['overview'].fillna('')
+    if 'genres' in df.columns:
+        df['genres'] = df['genres'].fillna('')
+    if 'keywords' in df.columns:
+        df['keywords'] = df['keywords'].fillna('')
     
-    s3.Bucket(bucket).download_file(f"{key_prefix}/tmdb_5000_movies.csv", movies_fn)
-    s3.Bucket(bucket).download_file(f"{key_prefix}/tmdb_5000_credits.csv", credits_fn)
+    # Create tags column by combining text features
+    df['tags'] = df.get('overview', '') + ' ' + df.get('genres', '') + ' ' + df.get('keywords', '')
     
-    logger.info("Reading downloaded data.")
-    movies = pd.read_csv(movies_fn)
-    credits = pd.read_csv(credits_fn)
+    # Apply text preprocessing
+    logger.info("Applying text preprocessing...")
+    df['tags'] = df['tags'].apply(preprocess_text)
     
-    # Clean up downloaded files
-    os.unlink(movies_fn)
-    os.unlink(credits_fn)
+    # Remove rows with empty tags
+    df = df[df['tags'].str.strip() != '']
     
-    logger.info("Merging datasets and selecting features.")
-    # Merge datasets
-    movies = movies.merge(credits, on='title')
-    movies = movies[['movie_id', 'title', 'overview', 'genres', 'keywords', 'cast', 'crew']]
-    movies.dropna(inplace=True)
+    logger.info("Processed data shape: %s", df.shape)
     
-    logger.info("Applying feature transformations.")
-    # Process features
-    movies['genres'] = movies['genres'].apply(convert_features)
-    movies['keywords'] = movies['keywords'].apply(convert_features)
-    movies['cast'] = movies['cast'].apply(convert_cast)
-    movies['crew'] = movies['crew'].apply(fetch_director)
-    movies['overview'] = movies['overview'].apply(lambda x: x.split())
+    # Split the data
+    train_size = int(0.8 * len(df))
+    val_size = int(0.1 * len(df))
     
-    # Remove spaces from categorical features
-    movies['cast'] = movies['cast'].apply(remove_space)
-    movies['crew'] = movies['crew'].apply(remove_space)
-    movies['genres'] = movies['genres'].apply(remove_space)
-    movies['keywords'] = movies['keywords'].apply(remove_space)
+    train_df = df[:train_size]
+    val_df = df[train_size:train_size + val_size]
+    test_df = df[train_size + val_size:]
     
-    # Create tags
-    movies['tags'] = movies['overview'] + movies['genres'] + movies['keywords'] + movies['cast'] + movies['crew']
+    logger.info("Train size: %s, Validation size: %s, Test size: %s", 
+                len(train_df), len(val_df), len(test_df))
     
-    # Create final dataset
-    processed_df = movies[['movie_id', 'title', 'tags']].copy()
-    processed_df['tags'] = processed_df['tags'].apply(lambda x: " ".join(x).lower())
+    # Save the splits
+    train_dir = os.path.join(base_dir, "train")
+    val_dir = os.path.join(base_dir, "validation")
+    test_dir = os.path.join(base_dir, "test")
     
-    # Apply stemming
-    logger.info("Applying stemming to text features.")
-    ps = PorterStemmer()
-    processed_df['tags'] = processed_df['tags'].apply(lambda x: stem_text(x, ps))
+    os.makedirs(train_dir, exist_ok=True)
+    os.makedirs(val_dir, exist_ok=True)
+    os.makedirs(test_dir, exist_ok=True)
     
-    logger.info("Splitting data into train and test sets.")
-    # Split data (80% train, 20% test)
-    train_data = processed_df.sample(frac=0.8, random_state=42)
-    test_data = processed_df.drop(train_data.index)
-    
-    logger.info("Writing processed datasets to %s.", base_dir)
-    # Save processed data
-    train_data.to_csv(f"{base_dir}/train/train.csv", index=False)
-    test_data.to_csv(f"{base_dir}/test/test.csv", index=False)
+    train_df.to_csv(os.path.join(train_dir, "train.csv"), index=False)
+    val_df.to_csv(os.path.join(val_dir, "validation.csv"), index=False)
+    test_df.to_csv(os.path.join(test_dir, "test.csv"), index=False)
     
     logger.info("Preprocessing completed successfully.")
