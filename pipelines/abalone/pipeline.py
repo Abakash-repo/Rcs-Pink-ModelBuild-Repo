@@ -161,7 +161,7 @@ def get_pipeline(
     sklearn_processor = SKLearnProcessor(
         framework_version="0.23-1",
         instance_type=processing_instance_type,
-        instance_count=processing_instance_count,
+        instance_count=1,
         base_job_name=f"{base_job_prefix}/sklearn-movie-preprocess",
         sagemaker_session=pipeline_session,
         role=role,
@@ -205,7 +205,7 @@ def get_pipeline(
         framework_version="1.2-1",
         py_version="py3",
         instance_type=training_instance_type,
-        instance_count=training_instance_count,
+        instance_count=1,
         output_path=model_path,
         base_job_name=f"{base_job_prefix}/movie-recommendation-train",
         sagemaker_session=pipeline_session,
