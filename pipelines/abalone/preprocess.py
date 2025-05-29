@@ -13,7 +13,7 @@ try:
     import nltk
 except ImportError:
     print("Installing NLTK...")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "nltk"])
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "requirements.txt"])
     import nltk
 
 # Download required NLTK data
