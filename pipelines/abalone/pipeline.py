@@ -150,11 +150,11 @@ def get_pipeline(
     # Input data parameters - separate for movies and credits files
     movies_input_data = ParameterString(
         name="MoviesInputDataUrl",
-        default_value=f"s3://{default_bucket}/movie-recommendation-data/tmdb_5000_movies.csv",
+        default_value="s3://rcs-pink-paper-sagemaker/recommendation-train-data/tmdb_5000_movies.csv",
     )
     credits_input_data = ParameterString(
         name="CreditsInputDataUrl", 
-        default_value=f"s3://{default_bucket}/movie-recommendation-data/tmdb_5000_credits.csv",
+        default_value="s3://rcs-pink-paper-sagemaker/recommendation-train-data/tmdb_5000_credits.csv",
     )
 
     # Processing step for feature engineering
