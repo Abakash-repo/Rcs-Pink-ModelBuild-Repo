@@ -1,124 +1,136 @@
-"""Feature engineering script for movie recommendation preprocessing."""
+#!/usr/bin/env python3
+
 import argparse
-import logging
 import os
-import subprocess
-import sys
 import pandas as pd
 import numpy as np
+import ast
+import logging
 from pathlib import Path
-
-# Install and setup NLTK
-try:
-    import nltk
-except ImportError:
-    print("Installing NLTK...")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"])
-    import nltk
-
-# Download required NLTK data
-try:
-    nltk.data.find('tokenizers/punkt')
-except LookupError:
-    print("Downloading NLTK punkt tokenizer...")
-    nltk.download('punkt', quiet=True)
-
-try:
-    nltk.data.find('corpora/stopwords')  
-except LookupError:
-    print("Downloading NLTK stopwords...")
-    nltk.download('stopwords', quiet=True)
-
 from nltk.stem.porter import PorterStemmer
-from nltk.corpus import stopwords
-import nltk
 
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
-logger.addHandler(logging.StreamHandler())
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-def preprocess_text(text):
-    """Preprocess text data for movie recommendation."""
-    if pd.isna(text):
-        return ""
-    
-    # Convert to lowercase
-    text = text.lower()
-    
-    # Tokenize
-    tokens = nltk.word_tokenize(text)
-    
-    # Remove stopwords and stem
+def convert(text):
+    """Convert JSON string to list of names"""
+    try:
+        return [i['name'] for i in ast.literal_eval(text)]
+    except:
+        return []
+
+def convert_cast(text):
+    """Extract top 3 cast members"""
+    try:
+        L = []
+        for i, val in enumerate(ast.literal_eval(text)):
+            if i < 3:
+                L.append(val['name'])
+            else:
+                break
+        return L
+    except:
+        return []
+
+def fetch_director(text):
+    """Extract director from crew"""
+    try:
+        for i in ast.literal_eval(text):
+            if i['job'] == 'Director':
+                return [i['name']]
+        return []
+    except:
+        return []
+
+def remove_space(L):
+    """Remove spaces from list items"""
+    return [i.replace(" ", "") for i in L if isinstance(i, str)]
+
+def stems(text):
+    """Apply stemming to text"""
     ps = PorterStemmer()
-    stop_words = set(stopwords.words('english'))
-    
-    processed_tokens = []
-    for token in tokens:
-        if token.isalpha() and token not in stop_words:
-            processed_tokens.append(ps.stem(token))
-    
-    return ' '.join(processed_tokens)
+    return " ".join([ps.stem(i) for i in text.split()])
 
 if __name__ == "__main__":
-    logger.info("Starting preprocessing.")
-    
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input-data", type=str, required=True)
+    parser.add_argument("--movies-data", type=str, help="Path to movies CSV file")
+    parser.add_argument("--credits-data", type=str, help="Path to credits CSV file")
+    
     args = parser.parse_args()
     
-    base_dir = "/opt/ml/processing"
-    logger.info("Reading input data from %s.", args.input_data)
+    logger.info("Starting movie data preprocessing")
     
-    # Read the input data
-    df = pd.read_csv(args.input_data)
-    logger.info("Input data shape: %s", df.shape)
+    # Load input data
+    logger.info(f"Loading movies data from: {args.movies_data}")
+    logger.info(f"Loading credits data from: {args.credits_data}")
     
-    # Preprocess the data - adjust column names based on your dataset
-    # Assuming your movie dataset has columns like 'title', 'overview', 'genres', etc.
+    movies = pd.read_csv(args.movies_data)
+    credits = pd.read_csv(args.credits_data)
     
-    # Example preprocessing for movie recommendation:
-    # Combine relevant text features into 'tags' column
-    if 'overview' in df.columns:
-        df['overview'] = df['overview'].fillna('')
-    if 'genres' in df.columns:
-        df['genres'] = df['genres'].fillna('')
-    if 'keywords' in df.columns:
-        df['keywords'] = df['keywords'].fillna('')
+    logger.info(f"Movies dataset shape: {movies.shape}")
+    logger.info(f"Credits dataset shape: {credits.shape}")
     
-    # Create tags column by combining text features
-    df['tags'] = df.get('overview', '') + ' ' + df.get('genres', '') + ' ' + df.get('keywords', '')
+    # Merge datasets
+    movies = movies.merge(credits, on='title')
+    movies = movies[['movie_id', 'title', 'overview', 'genres', 'keywords', 'cast', 'crew']]
     
-    # Apply text preprocessing
-    logger.info("Applying text preprocessing...")
-    df['tags'] = df['tags'].apply(preprocess_text)
+    # Handle missing values
+    movies.dropna(inplace=True)
+    logger.info(f"Dataset shape after removing NaN: {movies.shape}")
     
-    # Remove rows with empty tags
-    df = df[df['tags'].str.strip() != '']
+    # Process features
+    logger.info("Processing movie features...")
+    movies['genres'] = movies['genres'].apply(convert)
+    movies['keywords'] = movies['keywords'].apply(convert)
+    movies['cast'] = movies['cast'].apply(convert_cast)
+    movies['crew'] = movies['crew'].apply(fetch_director)
+    movies['overview'] = movies['overview'].apply(lambda x: x.split() if isinstance(x, str) else [])
     
-    logger.info("Processed data shape: %s", df.shape)
+    # Remove spaces
+    movies['cast'] = movies['cast'].apply(remove_space)
+    movies['crew'] = movies['crew'].apply(remove_space)
+    movies['genres'] = movies['genres'].apply(remove_space)
+    movies['keywords'] = movies['keywords'].apply(remove_space)
     
-    # Split the data
-    train_size = int(0.8 * len(df))
-    val_size = int(0.1 * len(df))
+    # Create tags
+    movies['tags'] = movies['overview'] + movies['genres'] + movies['keywords'] + movies['cast'] + movies['crew']
     
-    train_df = df[:train_size]
-    val_df = df[train_size:train_size + val_size]
-    test_df = df[train_size + val_size:]
+    # Create final dataframe
+    new_df = movies[['movie_id', 'title', 'tags']].copy()
+    new_df['tags'] = new_df['tags'].apply(lambda x: " ".join(x).lower())
     
-    logger.info("Train size: %s, Validation size: %s, Test size: %s", 
-                len(train_df), len(val_df), len(test_df))
+    # Apply stemming
+    logger.info("Applying stemming to text data...")
+    new_df['tags'] = new_df['tags'].apply(stems)
     
-    # Save the splits
-    train_dir = os.path.join(base_dir, "train")
-    val_dir = os.path.join(base_dir, "validation")
-    test_dir = os.path.join(base_dir, "test")
+    # Split data (for this use case, we'll use all data for training)
+    # But we'll create train/validation/test splits as per MLOps best practices
     
-    os.makedirs(train_dir, exist_ok=True)
-    os.makedirs(val_dir, exist_ok=True)
-    os.makedirs(test_dir, exist_ok=True)
+    # Shuffle the data
+    new_df = new_df.sample(frac=1, random_state=42).reset_index(drop=True)
     
-    train_df.to_csv(os.path.join(train_dir, "train.csv"), index=False)
-    val_df.to_csv(os.path.join(val_dir, "validation.csv"), index=False)
-    test_df.to_csv(os.path.join(test_dir, "test.csv"), index=False)
+    # Split ratios
+    n = len(new_df)
+    train_end = int(0.7 * n)
+    val_end = int(0.85 * n)
     
-    logger.info("Preprocessing completed successfully.")
+    train_df = new_df[:train_end]
+    val_df = new_df[train_end:val_end]
+    test_df = new_df[val_end:]
+    
+    logger.info(f"Train set size: {len(train_df)}")
+    logger.info(f"Validation set size: {len(val_df)}")
+    logger.info(f"Test set size: {len(test_df)}")
+    
+    # Save processed data
+    os.makedirs("/opt/ml/processing/train", exist_ok=True)
+    os.makedirs("/opt/ml/processing/validation", exist_ok=True)
+    os.makedirs("/opt/ml/processing/test", exist_ok=True)
+    
+    train_df.to_csv("/opt/ml/processing/train/train.csv", index=False)
+    val_df.to_csv("/opt/ml/processing/validation/validation.csv", index=False)
+    test_df.to_csv("/opt/ml/processing/test/test.csv", index=False)
+    
+    logger.info("Data preprocessing completed successfully!")
+    logger.info(f"Files saved to /opt/ml/processing/[train|validation|test]/")
