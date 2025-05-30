@@ -10,6 +10,16 @@ import joblib
 import logging
 from pathlib import Path
 
+# Install required libraries via pip
+required_packages = ['pandas', 'numpy', 'nltk', 'scikit-learn']
+for package in required_packages:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+
+# Download necessary NLTK data
+import nltk
+nltk.download('punkt')
+
+
 from nltk.stem.porter import PorterStemmer
 from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
