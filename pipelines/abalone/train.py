@@ -9,7 +9,8 @@ import pickle
 import joblib
 import logging
 from pathlib import Path
-
+import subprocess
+import sys
 # Install required libraries via pip
 required_packages = ['pandas', 'numpy', 'nltk', 'scikit-learn']
 for package in required_packages:
